@@ -1,0 +1,55 @@
+Import-Module ActiveDirectory
+
+$Users = Get-ADUser -Filter * -Properties MemberOf
+
+$Admins = @()
+$Output = ""
+
+foreach ($User in $Users) {
+    $Admin = $false
+    $IpAddress = ""
+    $Hash = ""
+
+    foreach ($Group in $User.MemberOf) {
+        if ((Get-ADGroup -Identity $Group).GroupCategory -eq "Security") {
+            $AdminRoles = @("Domain Admins", "Enterprise Admins", "Schema Admins")
+            if ($AdminRoles -contains (Get-ADGroup -Identity $Group).Name) {
+                $Admin = $true
+                break
+            }
+        }
+    }
+
+    if ($Admin) {
+        $Admins += $User
+    }
+
+    # Get IP address
+    $LogonEvents = Get-WinEvent -FilterHashtable @{
+        LogName   = 'Security'
+        ID        = 4624
+        StartTime = (Get-Date).AddDays(-1)
+        EndTime   = Get-Date
+    } -ComputerName $env:COMPUTERNAME -ErrorAction SilentlyContinue
+
+    $IpAddress = $LogonEvents | Where-Object {$_.Properties[5].Value -eq $User.SamAccountName} |
+        Select-Object -First 1 -ExpandProperty Properties |
+        ForEach-Object {$_.Value}
+
+    # Get password hash
+    $Hash = (Get-ADUser -Identity $User.SamAccountName -Properties "msDS-UserPasswordHash")."msDS-UserPasswordHash"
+
+    # Prepare output string
+    $Output += "Username: $($User.SamAccountName)`n"
+    $Output += "Full Name: $($User.Name)`n"
+    $Output += "IP Address: $IpAddress`n"
+    $Output += "Password Hash: $Hash`n"
+    $Output += "Is Administrator: $Admin`n"
+    $Output += "-------------------------`n`n"
+}
+
+# Save output to a text file
+$OutputFilePath = "$PWD\AD_Audit_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+$Output | Out-File -FilePath $OutputFilePath
+
+Write-Output "Audit completed. Results saved to: $OutputFilePath"
